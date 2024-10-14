@@ -1,0 +1,34 @@
+@url=http://localhost:8000/sql
+@user=root
+@pass=root
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+DEFINE TABLE IF NOT EXISTS default;
+
+###
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+UPSERT default:hello SET key = 'hello', value = 'world';
+
+###
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+SELECT key, value FROM default:hello;
