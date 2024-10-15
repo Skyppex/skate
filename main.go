@@ -251,6 +251,17 @@ func del(_ *cobra.Command, args []string) error {
 		return err
 	}
 
+	if useRemote {
+		v, err := delRemote(k, n)
+
+		if err != nil {
+			return err
+		}
+
+		printFromKV("%s", v)
+		return nil
+	}
+
 	db, err := openKV(n)
 
 	if err != nil {
@@ -631,7 +642,17 @@ UPSERT %s:%s SET key='%s', value='%s';`,
 		return nil, err
 	}
 
-	return alterResponse(resp, false, "set_jq")
+	status, err := alterResponse(resp, false, "set_jq")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(value) == 0 {
+		return nil, errors.New("Key not found")
+	}
+
+	return status, err
 }
 
 func getRemote(key []byte, dbName string) ([]byte, error) {
@@ -650,7 +671,46 @@ func getRemote(key []byte, dbName string) ([]byte, error) {
 		return nil, err
 	}
 
-	return alterResponse(resp, true, "get_jq")
+	value, err := alterResponse(resp, true, "get_jq")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(value) == 0 {
+		return nil, errors.New("Key not found")
+	}
+
+	return value, err
+}
+
+func delRemote(key []byte, dbName string) ([]byte, error) {
+	if dbName == "skate" {
+		return nil, errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if dbName == "" {
+		dbName = "default"
+	}
+
+	body := fmt.Sprintf("DELETE %s:%s;", dbName, key)
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return nil, err
+	}
+
+	value, err := alterResponse(resp, false, "del_jq")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(value) == 0 {
+		return nil, errors.New("Key not found")
+	}
+
+	return value, err
 }
 
 func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, error) {
@@ -676,7 +736,8 @@ func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, erro
 	})
 
 	if err != nil {
-		return nil, err
+		// return the response directly with no jq filtering
+		return resp, nil
 	}
 
 	cmd := exec.Command("jq", string(jqFilter), "--monochrome-output", "--raw-output")
