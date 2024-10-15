@@ -31,4 +31,4 @@ Content-Type: application/text
 Surreal-NS: test
 Surreal-DB: test
 
-SELECT key, value FROM default:hello;
+SELECT key, value FROM test:hello;

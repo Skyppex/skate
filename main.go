@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -213,7 +214,7 @@ func get(_ *cobra.Command, args []string) error {
 			return err
 		}
 
-		printFromKV("%s", []byte(v))
+		printFromKV("%s", v)
 		return nil
 	}
 
@@ -624,32 +625,68 @@ func setRemote(key []byte, db string, value []byte) ([]byte, error) {
 UPSERT %s:%s SET key='%s', value='%s';`,
 		db, db, key, key, value)
 
-	fmt.Println(body)
-	resp, err := surrealDBRequest("POST", []byte(body))
-	return resp, err
-}
-
-func getRemote(key []byte, db string) ([]byte, error) {
-	if db == "skate" {
-		return nil, errors.New("'skate' is a special db used to hold info about your remote server")
-	}
-
-	if db == "" {
-		db = "default"
-	}
-
-	body := fmt.Sprintf("SELECT key, value FROM %s:%s;", db, key)
-	fmt.Println(body)
 	resp, err := surrealDBRequest("POST", []byte(body))
 
 	if err != nil {
 		return nil, err
 	}
 
-	// var value []byte
-	// err = json.Unmarshal(resp, &value)
+	return alterResponse(resp, false, "set_jq")
+}
 
-	return resp, err
+func getRemote(key []byte, dbName string) ([]byte, error) {
+	if dbName == "skate" {
+		return nil, errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if dbName == "" {
+		dbName = "default"
+	}
+
+	body := fmt.Sprintf("SELECT key, value FROM %s:%s;", dbName, key)
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return alterResponse(resp, true, "get_jq")
+}
+
+func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, error) {
+	db, err := openKV("skate")
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer db.Close()
+
+	var jqFilter []byte
+
+	err = wrap(db, readonly, func(tx *badger.Txn) error {
+		item, err := tx.Get([]byte(jqFilterKey))
+
+		if err != nil {
+			return err
+		}
+
+		jqFilter, err = item.ValueCopy(nil)
+		return err
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command("jq", string(jqFilter), "--monochrome-output", "--raw-output")
+	cmd.Stdin = bytes.NewBuffer(resp)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err = cmd.Run()
+
+	value := []byte(strings.TrimSpace(out.String()))
+	return value, err
 }
 
 func surrealDBRequest(method string, body []byte) ([]byte, error) {
