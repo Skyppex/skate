@@ -20,7 +20,7 @@ Content-Type: application/text
 Surreal-NS: test
 Surreal-DB: test
 
-UPSERT default:hello SET key = 'hello', value = 'world';
+UPSERT default:goodbye SET key = 'goodbye', value = 'world';
 
 ###
 
@@ -32,3 +32,26 @@ Surreal-NS: test
 Surreal-DB: test
 
 SELECT key, value FROM test:hello;
+
+###
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+SELECT key, value FROM default;
+
+###
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+INFO FOR DB;
+

@@ -421,7 +421,7 @@ func findDb(name string) (string, error) {
 }
 
 func list(_ *cobra.Command, args []string) error {
-	var k string
+	var dbName string
 	var pf string
 
 	if keysIterate || valuesIterate {
@@ -435,11 +435,45 @@ func list(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	if len(args) == 1 {
-		k = args[0]
+	if useRemote {
+		keys, values, err := listRemote(dbName)
+
+		if err != nil {
+			return err
+		}
+
+		if keysIterate {
+			printFromKV("%s", keys)
+			return nil
+		}
+
+		if valuesIterate {
+			printFromKV("%s", values)
+			return nil
+		}
+
+		keys_split := bytes.Split(keys, []byte("\n"))
+		values_split := bytes.Split(values, []byte("\n"))
+
+		length := len(keys_split)
+		v_length := len(values_split)
+
+		if v_length < length {
+			length = v_length
+		}
+
+		for i := 0; i < length; i++ {
+			printFromKV(pf, keys_split[i], values_split[i])
+		}
+
+		return nil
 	}
 
-	_, n, err := keyParser(k)
+	if len(args) == 1 {
+		dbName = args[0]
+	}
+
+	_, n, err := keyParser(dbName)
 
 	if err != nil {
 		return err
@@ -711,6 +745,37 @@ func delRemote(key []byte, dbName string) ([]byte, error) {
 	}
 
 	return value, err
+}
+
+func listRemote(dbName string) ([]byte, []byte, error) {
+	if dbName == "skate" {
+		return nil, nil, errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if dbName == "" {
+		dbName = "default"
+	}
+
+	body := fmt.Sprintf("SELECT key, value FROM %s;", dbName)
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keys, err := alterResponse(resp, true, "list_keys_jq")
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	values, err := alterResponse(resp, true, "list_values_jq")
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return keys, values, err
 }
 
 func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, error) {
