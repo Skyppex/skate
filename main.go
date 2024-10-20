@@ -567,8 +567,186 @@ func list(_ *cobra.Command, args []string) error {
 	})
 }
 
-func pull(_ *cobra.Command, args []string) error { return nil }
-func push(_ *cobra.Command, args []string) error { return nil }
+func pull(_ *cobra.Command, args []string) error {
+	var dbName string
+
+	if len(args) == 1 {
+		dbName = args[0]
+	}
+
+	var key []byte
+	var name string
+
+	if dbName != "" {
+		k, n, err := keyParser(dbName)
+		key = k
+		name = n
+
+		if err != nil {
+			return err
+		}
+	}
+
+	if name == "skate" {
+		return errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if name == "" {
+		name = "default"
+	}
+
+	db, err := openKV(name)
+
+	if err != nil {
+		return err
+	}
+
+	var body string
+
+	if len(key) == 0 {
+		body = fmt.Sprintf("SELECT key, value FROM %s;", name)
+	} else {
+		body = fmt.Sprintf("SELECT key, value FROM %s:%s;", name, key)
+	}
+
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return err
+	}
+
+	keys, err := alterResponse(resp, "pull_keys_jq")
+
+	if err != nil {
+		return err
+	}
+
+	keys_list := bytes.Split(keys, []byte("\n"))
+
+	values, err := alterResponse(resp, "pull_values_jq")
+
+	if err != nil {
+		return err
+	}
+
+	values_list := bytes.Split(values, []byte("\n"))
+
+	fmt.Printf("Pulling %s\n", name)
+
+	wrap(db, false, func(tx *badger.Txn) error {
+		for i, k := range keys_list {
+			fmt.Printf("remote %s -> %s\n", k, k)
+			tx.Set(k, values_list[i])
+		}
+
+		return nil
+	})
+
+	return nil
+}
+
+func push(_ *cobra.Command, args []string) error {
+	var dbName string
+
+	if len(args) == 1 {
+		dbName = args[0]
+	}
+
+	var key []byte
+	var name string
+
+	if dbName != "" {
+		k, n, err := keyParser(dbName)
+		key = k
+		name = n
+
+		if err != nil {
+			return err
+		}
+	}
+
+	if name == "skate" {
+		return errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if name == "" {
+		name = "default"
+	}
+
+	db, err := openKV(name)
+
+	if err != nil {
+		return err
+	}
+
+	var keys_list [][]byte
+
+	if len(key) == 0 {
+		db.View(func(txn *badger.Txn) error {
+			opts := badger.DefaultIteratorOptions
+			opts.PrefetchSize = 10
+
+			it := txn.NewIterator(opts)
+			defer it.Close() //nolint:errcheck
+
+			for it.Rewind(); it.Valid(); it.Next() {
+				item := it.Item()
+				k := item.Key()
+
+				keys_list = append(keys_list, k)
+			}
+
+			return nil
+		})
+
+		fmt.Printf("Pushing %s\n", name)
+	} else {
+		keys_list = append(keys_list, key)
+		fmt.Printf("Pushing %s@%s\n", key, name)
+	}
+
+	values_list := make([][]byte, len(keys_list))
+
+	wrap(db, true, func(tx *badger.Txn) error {
+		for i, k := range keys_list {
+			fmt.Printf("%s -> remote %s\n", k, k)
+			value, err := tx.Get(k)
+
+			if err != nil {
+				return err
+			}
+
+			values_list[i], err = value.ValueCopy(nil)
+		}
+
+		return nil
+	})
+
+	body := fmt.Sprintf(`DEFINE TABLE IF NOT EXISTS %s;`, name)
+
+	for i, k := range keys_list {
+		if i > 0 {
+			body += ","
+		}
+
+		body += fmt.Sprintf("UPSERT %s:%s CONTENT {\"key\":\"%s\", \"value\":\"%s\"};", name, k, k, values_list[i])
+	}
+
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return err
+	}
+
+	value, err := alterResponse(resp, "push_jq")
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n", value)
+	return nil
+}
 
 func nameFromArgs(args []string) (string, error) {
 	if len(args) == 0 {
@@ -587,10 +765,10 @@ func nameFromArgs(args []string) (string, error) {
 func printFromKV(pf string, vs ...[]byte) {
 	nb := "(omitted binary data)"
 	fvs := make([]interface{}, 0)
-	isatty := term.IsTerminal(int(os.Stdin.Fd())) //nolint: gosec
+	is_a_tty := term.IsTerminal(int(os.Stdin.Fd())) //nolint: gosec
 
 	for _, v := range vs {
-		if isatty && !showBinary && !utf8.Valid(v) {
+		if is_a_tty && !showBinary && !utf8.Valid(v) {
 			fvs = append(fvs, nb)
 		} else {
 			fvs = append(fvs, string(v))
@@ -599,7 +777,7 @@ func printFromKV(pf string, vs ...[]byte) {
 
 	fmt.Printf(pf, fvs...)
 
-	if isatty && !strings.HasSuffix(pf, "\n") {
+	if is_a_tty && !strings.HasSuffix(pf, "\n") {
 		fmt.Println()
 	}
 }
@@ -712,7 +890,7 @@ UPSERT %s:%s SET key='%s', value='%s';`,
 		return nil, err
 	}
 
-	status, err := alterResponse(resp, false, "set_jq")
+	status, err := alterResponse(resp, "set_jq")
 
 	if err != nil {
 		return nil, err
@@ -741,7 +919,7 @@ func getRemote(key []byte, dbName string) ([]byte, error) {
 		return nil, err
 	}
 
-	value, err := alterResponse(resp, true, "get_jq")
+	value, err := alterResponse(resp, "get_jq")
 
 	if err != nil {
 		return nil, err
@@ -770,7 +948,7 @@ func delRemote(key []byte, dbName string) ([]byte, error) {
 		return nil, err
 	}
 
-	value, err := alterResponse(resp, false, "del_jq")
+	value, err := alterResponse(resp, "del_jq")
 
 	if err != nil {
 		return nil, err
@@ -799,13 +977,13 @@ func listRemote(dbName string) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 
-	keys, err := alterResponse(resp, true, "list_keys_jq")
+	keys, err := alterResponse(resp, "list_keys_jq")
 
 	if err != nil {
 		return nil, nil, err
 	}
 
-	values, err := alterResponse(resp, true, "list_values_jq")
+	values, err := alterResponse(resp, "list_values_jq")
 
 	if err != nil {
 		return nil, nil, err
@@ -822,7 +1000,7 @@ func listDbsRemote() ([]byte, error) {
 		return nil, err
 	}
 
-	value, err := alterResponse(resp, true, "list_dbs_jq")
+	value, err := alterResponse(resp, "list_dbs_jq")
 
 	if err != nil {
 		return nil, err
@@ -852,10 +1030,10 @@ func deleteDbRemote(dbName string) ([]byte, error) {
 		return nil, err
 	}
 
-	return alterResponse(resp, false, "delete_db_jq")
+	return alterResponse(resp, "delete_db_jq")
 }
 
-func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, error) {
+func alterResponse(resp []byte, jqFilterKey string) ([]byte, error) {
 	db, err := openKV("skate")
 
 	if err != nil {
@@ -866,7 +1044,7 @@ func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, erro
 
 	var jqFilter []byte
 
-	err = wrap(db, readonly, func(tx *badger.Txn) error {
+	err = wrap(db, true, func(tx *badger.Txn) error {
 		item, err := tx.Get([]byte(jqFilterKey))
 
 		if err != nil {
