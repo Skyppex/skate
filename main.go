@@ -98,14 +98,14 @@ var (
 	pullCmd = &cobra.Command{
 		Use:    "pull ([@DB])",
 		Hidden: false,
-		Short:  "Pull all records (from a single database) to the local db",
+		Short:  "Pull records to the local db",
 		Args:   cobra.MaximumNArgs(1),
 		RunE:   pull,
 	}
 	pushCmd = &cobra.Command{
 		Use:    "push ([@DB])",
 		Hidden: false,
-		Short:  "Push all records (from a single database) to the remote db",
+		Short:  "Push records to the remote db",
 		Args:   cobra.MaximumNArgs(1),
 		RunE:   push,
 	}
@@ -277,6 +277,20 @@ func del(_ *cobra.Command, args []string) error {
 
 // TODO: use lists/tables/trees for this?
 func listDbs(*cobra.Command, []string) error {
+	if useRemote {
+		dbs, err := listDbsRemote()
+
+		if err != nil {
+			return err
+		}
+
+		for _, db := range bytes.Split(dbs, []byte("\n")) {
+			fmt.Println(string(db))
+		}
+
+		return nil
+	}
+
 	dbs, err := getDbs()
 
 	for _, db := range dbs {
@@ -341,6 +355,28 @@ func getFilePath(args ...string) (string, error) {
 
 // deleteDb: delete a Skate database.
 func deleteDb(_ *cobra.Command, args []string) error {
+	if useRemote {
+		name, err := nameFromArgs(args)
+
+		if err != nil {
+			return err
+		}
+
+		message := fmt.Sprintf("Are you sure you want to delete '%s' and all its contents? (y/n)", warningStyle.Render(name))
+		message = lipgloss.NewStyle().Width(78).Render(message)
+		fmt.Println(message)
+
+		resp, err := deleteDbRemote(name)
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%q does not exist on the remote, %s\n", args[0], err.Error())
+			os.Exit(1)
+		}
+
+		printFromKV("%s", resp)
+		return nil
+	}
+
 	path, err := findDb(args[0])
 	var errNotFound errDBNotFound
 
@@ -435,20 +471,30 @@ func list(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	if len(args) == 1 {
+		dbName = args[0]
+	}
+
+	_, n, err := keyParser(dbName)
+
+	if err != nil {
+		return err
+	}
+
 	if useRemote {
-		keys, values, err := listRemote(dbName)
+		keys, values, err := listRemote(n)
 
 		if err != nil {
 			return err
 		}
 
 		if keysIterate {
-			printFromKV("%s", keys)
+			printFromKV(pf, keys)
 			return nil
 		}
 
 		if valuesIterate {
-			printFromKV("%s", values)
+			printFromKV(pf, values)
 			return nil
 		}
 
@@ -467,16 +513,6 @@ func list(_ *cobra.Command, args []string) error {
 		}
 
 		return nil
-	}
-
-	if len(args) == 1 {
-		dbName = args[0]
-	}
-
-	_, n, err := keyParser(dbName)
-
-	if err != nil {
-		return err
 	}
 
 	db, err := openKV(n)
@@ -686,7 +722,7 @@ UPSERT %s:%s SET key='%s', value='%s';`,
 		return nil, errors.New("Key not found")
 	}
 
-	return status, err
+	return status, nil
 }
 
 func getRemote(key []byte, dbName string) ([]byte, error) {
@@ -715,7 +751,7 @@ func getRemote(key []byte, dbName string) ([]byte, error) {
 		return nil, errors.New("Key not found")
 	}
 
-	return value, err
+	return value, nil
 }
 
 func delRemote(key []byte, dbName string) ([]byte, error) {
@@ -744,7 +780,7 @@ func delRemote(key []byte, dbName string) ([]byte, error) {
 		return nil, errors.New("Key not found")
 	}
 
-	return value, err
+	return value, nil
 }
 
 func listRemote(dbName string) ([]byte, []byte, error) {
@@ -776,6 +812,47 @@ func listRemote(dbName string) ([]byte, []byte, error) {
 	}
 
 	return keys, values, err
+}
+
+func listDbsRemote() ([]byte, error) {
+	body := "INFO FOR DB;"
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return nil, err
+	}
+
+	value, err := alterResponse(resp, true, "list_dbs_jq")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(value) == 0 {
+		fmt.Fprintf(os.Stderr, "No databases found on the remote")
+		os.Exit(1)
+	}
+
+	return value, nil
+}
+
+func deleteDbRemote(dbName string) ([]byte, error) {
+	if dbName == "skate" {
+		return nil, errors.New("'skate' is a special db used to hold info about your remote server")
+	}
+
+	if dbName == "" {
+		dbName = "default"
+	}
+
+	body := fmt.Sprintf("REMOVE TABLE %s", dbName)
+	resp, err := surrealDBRequest("POST", []byte(body))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return alterResponse(resp, false, "delete_db_jq")
 }
 
 func alterResponse(resp []byte, readonly bool, jqFilterKey string) ([]byte, error) {

@@ -55,3 +55,14 @@ Surreal-DB: test
 
 INFO FOR DB;
 
+###
+
+POST {{url}}
+Accept: application/json
+Authorization: Basic {{user}}:{{pass}}
+Content-Type: application/text
+Surreal-NS: test
+Surreal-DB: test
+
+REMOVE TABLE default;
+
